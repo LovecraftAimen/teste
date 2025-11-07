@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BJJ Bracket Viewer — Eliminação Simples</title>
+    <style>
+      :root {
+        --bg: #0f1724;
+        --card: #111827;
+        --muted: #9ca3af;
+        --accent: #06b6d4;
+        --white: #f8fafc;
+      }
+      body {
+        font-family: Inter, system-ui, Segoe UI, Helvetica, Arial;
+        margin: 0;
+        padding: 20px;
+        background: linear-gradient(180deg, #07101a, #071826);
+        color: var(--white);
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      .container {
+        display: flex;
+        gap: 16px;
+      }
+      .panel {
+        background: rgba(255, 255, 255, 0.03);
+        padding: 12px;
+        border-radius: 10px;
+        flex: 0 0 360px;
+      }
+      .board {
+        flex: 1;
+        overflow: auto;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 10px;
+      }
+      input,
+      select,
+      button {
+        width: 100%;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: transparent;
+        color: var(--white);
+        margin-bottom: 8px;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .match {
+        border-radius: 8px;
+        padding: 8px;
+        margin: 6px 0;
+        background: rgba(255, 255, 255, 0.02);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .competitor {
+        flex: 1;
+        padding: 6px;
+        border-radius: 6px;
+        margin: 0 6px;
+        cursor: pointer;
+      }
+      .competitor.win {
+        outline: 2px solid rgba(6, 182, 212, 0.3);
+      }
+      .round {
+        display: inline-block;
+        min-width: 220px;
+        vertical-align: top;
+        margin-right: 18px;
+      }
+      .round h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+      }
+      .small {
+        font-size: 12px;
+        padding: 6px;
+      }
+      .note {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+      .tag {
+        background: rgba(255, 255, 255, 0.04);
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        display: inline-block;
+      }
+      @media (max-width: 900px) {
+        .container {
+          flex-direction: column;
+        }
+        .panel {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>BJJ Bracket Viewer — Eliminação Simples</h1>
+    <div class="container">
+      <div class="panel">
+        <label
+          >Carregar planilha (XLSX) ou CSV com colunas:
+          <span class="tag">Nome</span>, <span class="tag">Academia</span>,
+          <span class="tag">Seed</span></label
+        >
+        <input id="file" type="file" accept=".xlsx,.xls,.csv" />
+        <label>Opções</label>
+        <select id="academyStrategy">
+          <option value="none">Sem agrupamento por academia</option>
+          <option value="separate">Evitar mesma academia na 1ª rodada</option>
+        </select>
+        <label>Gerar repêchage para bronze?</label>
+        <select id="bronzeMode">
+          <option value="one">1 bronze</option>
+          <option value="two">2 bronzes</option>
+        </select>
+        <div class="controls">
+          <button id="generate">Gerar Chaveamento</button>
+          <button id="export" class="small">Exportar CSV</button>
+        </div>
+      </div>
+
+      <div class="board" id="board">
+        <div id="rounds"></div>
+      </div>
+    </div>
+
+    <!-- carregamento dinâmico da biblioteca XLSX -->
+    <script>
+      function loadXLSX() {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src =
+            "https://cdn.jsdelivr.net/npm/xlsx@0.18.10/dist/xlsx.full.min.js";
+          s.onload = resolve;
+          s.onerror = () => {
+            console.warn("CDN principal falhou. Tentando fallback...");
+            const alt = document.createElement("script");
+            alt.src = "https://unpkg.com/xlsx@0.18.10/dist/xlsx.full.min.js";
+            alt.onload = resolve;
+            alt.onerror = () =>
+              reject(new Error("Erro ao carregar biblioteca XLSX"));
+            document.head.appendChild(alt);
+          };
+          document.head.appendChild(s);
+        });
+      }
+
+      loadXLSX()
+        .then(() => {
+          console.log("Biblioteca XLSX carregada com sucesso!");
+          initApp();
+        })
+        .catch((err) => {
+          console.error(err);
+          alert("Erro ao carregar biblioteca XLSX");
+        });
+
+      function initApp() {
+        let rawData = null;
+
+        async function handleFile(f) {
+          try {
+            const name = f.name.toLowerCase();
+            if (name.endsWith(".csv")) {
+              const text = await f.text();
+              const parsed = parseCSV(text);
+              detectColumns(parsed.headers, parsed.data);
+            } else {
+              const ab = await f.arrayBuffer();
+              const wb = XLSX.read(ab, { type: "array" });
+              const sheetName = wb.SheetNames[0];
+              const ws = wb.Sheets[sheetName];
+              const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+              detectColumns(Object.keys(json[0] || {}), json);
+            }
+          } catch (err) {
+            console.error(err);
+            alert("Erro ao ler o arquivo: " + err.message);
+          }
+        }
+
+        function parseCSV(text) {
+          const rows = text.split(/\r?\n/).filter((r) => r.trim());
+          const parsed = rows.map((r) => r.split(/,|;/).map((c) => c.trim()));
+          const headers = parsed[0];
+          const data = parsed.slice(1).map((r) => {
+            const obj = {};
+            headers.forEach((h, i) => (obj[h || `col${i}`] = r[i] || ""));
+            return obj;
+          });
+          return { headers, data };
+        }
+
+        function detectColumns(headers, data) {
+          const lower = headers.map((h) => String(h).toLowerCase());
+          const nameIdx = lower.findIndex((h) =>
+            /nome|atleta|competidor|participant|name/.test(h)
+          );
+          const academyIdx = lower.findIndex((h) =>
+            /academ|team|clube|gym/.test(h)
+          );
+          const seedIdx = lower.findIndex((h) =>
+            /seed|posi|rank|posição/.test(h)
+          );
+          rawData = data
+            .map((row, i) => {
+              const keys = Object.keys(row);
+              const get = (idx, name) =>
+                idx >= 0
+                  ? row[keys[idx]]
+                  : row["Nome"] || row["name"] || `Atleta ${i + 1}`;
+              return {
+                Nome: get(nameIdx, "Nome"),
+                Academia: academyIdx >= 0 ? row[keys[academyIdx]] : "",
+                Seed: seedIdx >= 0 ? row[keys[seedIdx]] : "",
+              };
+            })
+            .filter((r) => r.Nome);
+
+          if (rawData.length) {
+            const options = {
+              academyStrategy: document.getElementById("academyStrategy").value,
+            };
+            const meta = buildBracket(rawData, options);
+            render(meta);
+          } else {
+            alert("Nenhum competidor detectado no arquivo.");
+          }
+        }
+
+        function nextPow2(n) {
+          return Math.pow(2, Math.ceil(Math.log2(n || 1)));
+        }
+
+        function interleaveByAcademy(list) {
+          const groups = {};
+          list.forEach((x) => {
+            const k = x.Academia || "_none";
+            groups[k] = groups[k] || [];
+            groups[k].push(x);
+          });
+          const buckets = Object.values(groups).sort(
+            (a, b) => b.length - a.length
+          );
+          const result = [];
+          let i = 0;
+          while (result.length < list.length) {
+            for (const b of buckets) {
+              if (b[i]) result.push(b[i]);
+            }
+            i++;
+          }
+          return result;
+        }
+
+        function buildBracket(athletes, options) {
+          const slots = nextPow2(athletes.length);
+          let arranged =
+            options && options.academyStrategy === "separate"
+              ? interleaveByAcademy(athletes.slice())
+              : athletes.slice();
+          while (arranged.length < slots)
+            arranged.push({ Nome: "BYE", Academia: "", Seed: "" });
+          const pairs = [];
+          for (let i = 0; i < slots / 2; i++)
+            pairs.push([arranged[i], arranged[slots - 1 - i]]);
+
+          const rounds = [];
+          rounds.push(
+            pairs.map((p, i) => ({
+              id: `R1-M${i + 1}`,
+              slotA: p[0],
+              slotB: p[1],
+              winner: null,
+            }))
+          );
+          let prev = rounds[0].length,
+            rnum = 2;
+          while (prev > 1) {
+            const arr = new Array(Math.ceil(prev / 2)).fill(0).map((_, i) => ({
+              id: `R${rnum}-M${i + 1}`,
+              slotA: null,
+              slotB: null,
+              winner: null,
+            }));
+            rounds.push(arr);
+            prev = arr.length;
+            rnum++;
+          }
+          return { rounds };
+        }
+
+        function render(meta) {
+          const c = document.getElementById("rounds");
+          c.innerHTML = "";
+          for (let r = 0; r < meta.rounds.length; r++) {
+            const col = document.createElement("div");
+            col.className = "round";
+            const h = document.createElement("h3");
+            h.textContent = "Rodada " + (r + 1);
+            col.appendChild(h);
+            meta.rounds[r].forEach((m) => {
+              const div = document.createElement("div");
+              div.className = "match";
+              ["A", "B"].forEach((s) => {
+                const slot = m["slot" + s] || { Nome: "" };
+                const el = document.createElement("div");
+                el.className = "competitor";
+                el.textContent = slot.Nome || slot;
+                div.appendChild(el);
+              });
+              col.appendChild(div);
+            });
+            c.appendChild(col);
+          }
+        }
+
+        document.getElementById("file").addEventListener("change", (e) => {
+          const f = e.target.files[0];
+          if (f) handleFile(f);
+        });
+      }
+    </script>
+  </body>
+</html>
